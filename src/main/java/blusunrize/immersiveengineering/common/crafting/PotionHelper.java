@@ -14,6 +14,7 @@ import blusunrize.immersiveengineering.api.crafting.IngredientWithSize;
 import blusunrize.immersiveengineering.common.fluids.PotionFluid.PotionBottleType;
 import blusunrize.immersiveengineering.common.register.IEDataComponents;
 import blusunrize.immersiveengineering.common.register.IEFluids;
+import blusunrize.immersiveengineering.common.util.IELogger;
 import blusunrize.immersiveengineering.mixin.accessors.PotionBrewingAccess;
 import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponentPredicate;
@@ -25,6 +26,7 @@ import net.minecraft.world.item.alchemy.Potion;
 import net.minecraft.world.item.alchemy.PotionBrewing;
 import net.minecraft.world.item.alchemy.PotionContents;
 import net.minecraft.world.item.alchemy.Potions;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.neoforged.neoforge.common.brewing.BrewingRecipe;
 import net.neoforged.neoforge.common.brewing.IBrewingRecipe;
@@ -34,8 +36,10 @@ import net.neoforged.neoforge.fluids.crafting.FluidIngredient;
 import net.neoforged.neoforge.fluids.crafting.SizedFluidIngredient;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 
+import java.util.Arrays;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class PotionHelper
 {
@@ -72,11 +76,24 @@ public class PotionHelper
 			brewingData = ImmersiveEngineering.proxy.getClientWorld().potionBrewing();
 		// Vanilla
 		for(var mixPredicate : ((PotionBrewingAccess)brewingData).getConversions())
-			if(mixPredicate.getTo()!=Potions.MUNDANE&&mixPredicate.getTo()!=Potions.THICK)
-				out.apply(
-						mixPredicate.getTo(), mixPredicate.getFrom(),
-						new IngredientWithSize(mixPredicate.getIngredient())
+		{
+			if(mixPredicate.getTo()==Potions.MUNDANE||mixPredicate.getTo()==Potions.THICK)
+				continue;
+			if(mixPredicate.getTo().unwrapKey().isEmpty()||mixPredicate.getFrom().unwrapKey().isEmpty())
+			{
+				IELogger.logger.warn(
+						"Skipping potion brewing mix with unregistered potion holder. Input: {}, Output: {}, Ingredient items: {}",
+						describePotion(mixPredicate.getFrom()),
+						describePotion(mixPredicate.getTo()),
+						describeIngredient(mixPredicate.getIngredient())
 				);
+				continue;
+			}
+			out.apply(
+					mixPredicate.getTo(), mixPredicate.getFrom(),
+					new IngredientWithSize(mixPredicate.getIngredient())
+			);
+		}
 
 		// Modded
 		for(IBrewingRecipe recipe : brewingData.getRecipes())
@@ -86,7 +103,22 @@ public class PotionHelper
 				Ingredient input = brewingRecipe.getInput();
 				ItemStack output = brewingRecipe.getOutput();
 				if(output.getItem()==Items.POTION&&input.getItems().length > 0)
-					out.apply(getPotion(output), getPotion(input.getItems()[0]), ingredient);
+				{
+					Holder<Potion> outputPotion = getPotion(output);
+					Holder<Potion> inputPotion = getPotion(input.getItems()[0]);
+					if(outputPotion.unwrapKey().isEmpty()||inputPotion.unwrapKey().isEmpty())
+					{
+						IELogger.logger.warn(
+								"Skipping modded brewing recipe with unregistered potion holder. Recipe class: {}, Input: {}, Output: {}, Ingredient items: {}",
+								recipe.getClass().getName(),
+								describePotion(inputPotion),
+								describePotion(outputPotion),
+								describeIngredient(brewingRecipe.getIngredient())
+						);
+						continue;
+					}
+					out.apply(outputPotion, inputPotion, ingredient);
+				}
 			}
 	}
 
@@ -94,6 +126,35 @@ public class PotionHelper
 	{
 		PotionContents potionData = potion.getOrDefault(DataComponents.POTION_CONTENTS, PotionContents.EMPTY);
 		return potionData.potion().orElse(Potions.WATER);
+	}
+
+	private static String describePotion(Holder<Potion> holder)
+	{
+		return holder.unwrapKey()
+				.map(k -> k.location().toString())
+				.orElseGet(() -> {
+					String effects = holder.value().getEffects().stream()
+							.map(MobEffectInstance::getEffect)
+							.map(e -> e.unwrapKey()
+									.map(k -> k.location().toString())
+									.orElse("unknown_effect"))
+							.collect(Collectors.joining(", "));
+					return "unregistered[effects=["+effects+"]]";
+				});
+	}
+
+	private static String describeIngredient(Ingredient ingredient)
+	{
+		try
+		{
+			return Arrays.stream(ingredient.getItems())
+					.map(stack -> stack.getItem().toString())
+					.collect(Collectors.joining(", ", "[", "]"));
+		}
+		catch(Exception e)
+		{
+			return "[error describing ingredient: "+e.getMessage()+"]";
+		}
 	}
 
 	public interface PotionRecipeProcessor
